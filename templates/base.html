@@ -1,0 +1,113 @@
+<!-- base.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{% block title %}Drive File Browser{% endblock %}</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background: #f5f7fa;
+            color: #333;
+        }
+        header {
+            text-align: center;
+            margin-bottom: 30px;
+            padding-bottom: 15px;
+            border-bottom: 1px solid #eee;
+        }
+        h1 { color: #2c3e50; }
+        .container { max-width: 1000px; margin: 0 auto; }
+        .app-wrapper { display: flex; min-height: 100vh; }
+        .sidebar {
+            width: 280px;
+            background: #ffffff;
+            border-right: 1px solid #eee;
+            padding: 24px 18px;
+            box-shadow: 0 0 0 rgba(0,0,0,0);
+            box-sizing: border-box;
+            height: 100vh;
+            position: sticky;
+            top: 0;
+            overflow: auto;
+        }
+        .sidebar header h1 { font-size: 20px; margin: 0 0 12px 0; }
+        .sidebar-footer { font-size: 0.85em; color: #95a5a6; margin-top: 18px; }
+        .main { flex: 1; padding: 28px; display: flex; flex-direction: column; }
+        /* Ensure content container remains centered but main area can expand */
+        .container { max-width: 1100px; margin: 0 auto; padding: 0 6px; box-sizing: border-box; }
+        ul { list-style: none; padding: 0; }
+        li { margin: 8px 0; padding: 10px; background: white; border-radius: 6px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+        a { text-decoration: none; color: #3498db; font-weight: 600; }
+        a:hover { text-decoration: underline; }
+        .folder { color: #e67e22; }
+        .file { color: #27ae60; }
+        .back { margin-top: 20px; display: inline-block; color: #7f8c8d; }
+        .search-box {
+            margin-bottom: 8px;
+        }
+        .search-box input {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            font-size: 14px;
+            box-sizing: border-box;
+        }
+        .pdf-container { display: flex; flex-direction: column; gap: 12px; }
+        .pdf-preview {
+            width: 100%;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            flex: 1 1 auto;
+            min-height: 60vh;
+        }
+        footer {
+            text-align: center;
+            margin-top: 40px;
+            color: #95a5a6;
+            font-size: 0.9em;
+        }
+    </style>
+</head>
+<body>
+    <div class="app-wrapper">
+        <aside class="sidebar">
+            <header>
+                <h1>📁 Koleksi Manual & Pengetahuan Teknis Otomotif</h1>
+                    <div class="search-box">
+                        <form action="/search" method="GET">
+                            <input type="text" name="q" placeholder="Cari manual, merek, atau sistem (misal: BYD, ADAS, Suzuki)" />
+                        </form>
+                    </div>
+
+                    {% block sidebar %}
+                    <nav>
+                        <h3 style="margin-top:14px; margin-bottom:6px; font-size:0.95em; color:#34495e;">Kategori</h3>
+                        <ul>
+                        {% for name, folder_id, count in root_list %}
+                            <li style="margin-bottom:6px;">
+                                <a href="/folder/{{ folder_id }}">{{ name }}</a>
+                                <small style="color:#95a5a6"> ({{ count }})</small>
+                            </li>
+                        {% endfor %}
+                        </ul>
+                    </nav>
+                    {% endblock %}
+            </header>
+            <footer class="sidebar-footer">
+                &copy; 2025 — File ini untuk keperluan edukasi teknis.
+            </footer>
+        </aside>
+
+        <main class="main">
+            <div class="container">
+                {% block content %}{% endblock %}
+            </div>
+        </main>
+    </div>
+</body>
+</html>

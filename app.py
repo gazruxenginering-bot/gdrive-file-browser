@@ -1,17 +1,60 @@
-from flask import Flask, render_template, request, jsonify
-from models import db, File
-from drive_sync import get_drive_service, sync_all_roots
-from config import DATABASE_PATH, ROOT_FOLDERS
+# app.py
+
 import os
+import sqlite3
+import requests
+from flask import Flask, render_template, abort, request, jsonify, Response, stream_with_context
+from google.oauth2 import service_account
+from google.auth.transport.requests import Request as AuthRequest
 
 app = Flask(__name__)
-app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{DATABASE_PATH}'
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+DATABASE = 'database.db'
 
-db.init_app(app)
+# === Konfigurasi Root Folder (harus sesuai dengan drive_sync.py) ===
+ROOT_FOLDERS = {
+    "EBOOKS": "12ffd7GqHAiy3J62Vu65LbVt6-ultog5Z",
+    "Pengetahuan": "1Y2SLCbyHoB53BaQTTwRta2T6dv_drRll",
+    "Service_Manual_1": "1CHz8UWZXfJtXlcjp9-FPAo-t_KkfTztW",
+    "Service_Manual_2": "1_SsZ7SkaZxvXUZ6RUAA_o7WR_GAtgEwT"
+}
+
+# === Nama tampilan untuk UI ===
+DISPLAY_NAMES = {
+    "EBOOKS": "📚 EBOOKS",
+    "Pengetahuan": "🧠 Pengetahuan",
+    "Service_Manual_1": "🔧 Service Manual (1)",
+    "Service_Manual_2": "⚙️ Service Manual (2)"
+}
+
+def get_db_connection():
+    conn = sqlite3.connect(DATABASE)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+@app.context_processor
+def inject_root_list():
+    """Make root_list available in all templates for the sidebar."""
+    conn = get_db_connection()
+    root_list = []
+    try:
+        for key, folder_id in ROOT_FOLDERS.items():
+            count = conn.execute(
+                "SELECT COUNT(*) FROM files WHERE (parent_id = ?) OR (root_folder_name = ?)",
+                (folder_id, key)
+            ).fetchone()[0]
+            name = DISPLAY_NAMES.get(key, key)
+            root_list.append((name, folder_id, count))
+    finally:
+        conn.close()
+    return dict(root_list=root_list)
 
 def sizeof_fmt(num, suffix="B"):
-    if not num:
+    if not num or num == "—":
+        return "—"
+    try:
+        num = int(num)
+    except:
         return "—"
     for unit in ["", "K", "M", "G"]:
         if abs(num) < 1024.0:
@@ -21,154 +64,179 @@ def sizeof_fmt(num, suffix="B"):
 
 app.jinja_env.filters['filesizeformat'] = sizeof_fmt
 
-@app.template_filter('datetime_format')
-def datetime_format(value, format='%d/%m/%Y %H:%M'):
-    if value:
-        return value.strftime(format)
-    return "—"
 
-# === SYNC ===
-@app.route('/sync')
-def sync_route():
-    try:
-        service = get_drive_service()
-        all_items = sync_all_roots(service)
-        db.session.query(File).delete()
-        for item in all_items:
-            f = File(
-                drive_id=item['drive_id'],
-                name=item['name'],
-                mime_type=item['mime_type'],
-                is_folder=item['is_folder'],
-                parent_id=item['parent_id'],
-                root_key=item['root_key'],
-                path=item['path'],
-                size=item['size'],
-                web_view_link=item['web_view_link'],
-                modified_time=item['modified_time']
-            )
-            db.session.add(f)
-        db.session.commit()
-        return f"✅ Synced {len(all_items)} items from {len(ROOT_FOLDERS)} root folders."
-    except Exception as e:
-        return f"❌ Error during sync: {str(e)}", 500
-
-# === HALAMAN UTAMA ===
+# === HALAMAN UTAMA: Tampilkan 4 root folder eksplisit ===
 @app.route('/')
-def home():
-    roots = []
+def index():
+    conn = get_db_connection()
+    root_list = []
     for key, folder_id in ROOT_FOLDERS.items():
-        name = key.replace('_', ' ').title()
-        roots.append({'name': name, 'drive_id': folder_id})
-    return render_template('index.html', roots=roots, is_home=True, search_results=None)
+        # Hitung jumlah file & folder langsung di bawah root folder ini
+        count = conn.execute(
+            "SELECT COUNT(*) FROM files WHERE (parent_id = ?) OR (root_folder_name = ?)",
+            (folder_id, key)
+        ).fetchone()[0]
+        name = DISPLAY_NAMES.get(key, key)
+        root_list.append((name, folder_id, count))
+    conn.close()
+    return render_template('index.html', root_list=root_list)
+
+
+# === TAMPILKAN ISI FOLDER ===
+@app.route('/folder/<folder_id>')
+def view_folder(folder_id):
+    conn = get_db_connection()
+    
+    # Cari nama folder ini (untuk judul halaman)
+    folder_name = "Folder"
+    for key, fid in ROOT_FOLDERS.items():
+        if fid == folder_id:
+            folder_name = DISPLAY_NAMES.get(key, key)
+            break
+    else:
+        # Coba cari dari database jika ini subfolder
+        folder_row = conn.execute(
+            "SELECT name FROM files WHERE id = ? AND is_directory = 1", (folder_id,)
+        ).fetchone()
+        if folder_row:
+            folder_name = folder_row['name']
+        else:
+            # Cek apakah ada file di folder ini (meski folder root tidak tersimpan)
+            count = conn.execute(
+                "SELECT COUNT(*) FROM files WHERE parent_id = ?", (folder_id,)
+            ).fetchone()[0]
+            if count == 0:
+                abort(404)
+
+    # Ambil semua item di folder ini
+    items = conn.execute(
+        "SELECT * FROM files WHERE parent_id = ? ORDER BY is_directory DESC, name",
+        (folder_id,)
+    ).fetchall()
+    conn.close()
+
+    return render_template('folder.html', folder_id=folder_id, folder_name=folder_name, items=items)
+
+
+# === PREVIEW FILE (PDF) ===
+@app.route('/file/<file_id>')
+def file_preview(file_id):
+    conn = get_db_connection()
+    try:
+        file = conn.execute(
+            "SELECT * FROM files WHERE id = ? AND is_directory = 0", (file_id,)
+        ).fetchone()
+        if not file:
+            abort(404)
+
+        parent_id = file['parent_id']
+        sidebar_items = []
+        if parent_id:
+            # show sibling folders (directories) in the same parent for navigation
+            sidebar_items = conn.execute(
+                "SELECT id, name FROM files WHERE parent_id = ? AND is_directory = 1 ORDER BY name",
+                (parent_id,)
+            ).fetchall()
+    finally:
+        conn.close()
+
+    # Render a PDF.js single-page viewer (falls back to Drive preview if CORS prevents loading)
+    return render_template('pdfjs_viewer.html', file=file, sidebar_items=sidebar_items)
+
+
+@app.route('/download/<file_id>')
+def download_proxy(file_id):
+    """Proxy endpoint that downloads a file from Google Drive using a service account
+    and streams it back to the client. This avoids client-side CORS issues when
+    PDF.js requests the PDF binary directly.
+    """
+    # ensure credentials file exists
+    creds_file = os.path.join(os.path.dirname(__file__), 'credentials.json')
+    if not os.path.exists(creds_file):
+        app.logger.error('credentials.json not found')
+        abort(404)
+
+    try:
+        creds = service_account.Credentials.from_service_account_file(
+            creds_file, scopes=['https://www.googleapis.com/auth/drive.readonly']
+        )
+        creds.refresh(AuthRequest())
+        token = creds.token
+    except Exception:
+        app.logger.exception('Failed to obtain service account token')
+        abort(500)
+
+    drive_url = f'https://www.googleapis.com/drive/v3/files/{file_id}?alt=media'
+    headers = {'Authorization': f'Bearer {token}'}
+    try:
+        r = requests.get(drive_url, headers=headers, stream=True, timeout=60)
+    except Exception:
+        app.logger.exception('Error requesting file from Drive')
+        abort(502)
+
+    if r.status_code != 200:
+        app.logger.error('Drive returned status %s for file %s', r.status_code, file_id)
+        return (f'Failed to download file (status {r.status_code})', 502)
+
+    def generate():
+        for chunk in r.iter_content(chunk_size=8192):
+            if chunk:
+                yield chunk
+
+    content_type = r.headers.get('Content-Type', 'application/octet-stream')
+    resp = Response(stream_with_context(generate()), content_type=content_type)
+    disp = r.headers.get('Content-Disposition')
+    if disp:
+        resp.headers['Content-Disposition'] = disp
+    return resp
+
 
 # === PENCARIAN GLOBAL ===
 @app.route('/search')
-def global_search():
+def search():
     query = request.args.get('q', '').strip()
     if not query:
-        return render_template('index.html', roots=[], is_home=True, search_results=[])
+        return index()
 
-    try:
-        matches = File.query.filter(File.name.contains(query)).all()
-        return render_template(
-            'index.html',
-            roots=[],
-            is_home=True,
-            search_results=matches,
-            query=query
-        )
-    except Exception as e:
-        return f"❌ Search error: {str(e)}", 500
+    conn = get_db_connection()
+    results = conn.execute(
+        "SELECT *, (CASE WHEN root_folder_name = 'EBOOKS' THEN '📚 EBOOKS' " +
+        "WHEN root_folder_name = 'Pengetahuan' THEN '🧠 Pengetahuan' " +
+        "WHEN root_folder_name = 'Service_Manual_1' THEN '🔧 Service Manual (1)' " +
+        "WHEN root_folder_name = 'Service_Manual_2' THEN '⚙️ Service Manual (2)' " +
+        "ELSE root_folder_name END) as display_root " +
+        "FROM files WHERE name LIKE ? ORDER BY root_folder_name, name",
+        (f"%{query}%",)
+    ).fetchall()
+    conn.close()
+    return render_template('search.html', query=query, results=results)
 
-# === TAMPILKAN FOLDER ===
-@app.route('/folder/<drive_id>')
-def folder_view(drive_id):
-    try:
-        current = File.query.filter_by(drive_id=drive_id).first_or_404()
-        query = request.args.get('q', '').strip()
 
-        if query:
-            files = File.query.filter(File.parent_id == drive_id, File.name.contains(query)).all()
-        else:
-            files = File.query.filter(File.parent_id == drive_id).all()
-
-        path_parts = [p for p in current.path.split('/') if p]
-        breadcrumb = []
-        for i, part in enumerate(path_parts):
-            current_path = "/" + "/".join(path_parts[:i+1])
-            folder = File.query.filter_by(path=current_path, is_folder=True).first()
-            breadcrumb.append({'name': part, 'id': folder.drive_id if folder else None})
-
-        return render_template(
-            'index.html',
-            current_folder=current,
-            files=files,
-            breadcrumb=breadcrumb,
-            query=query,
-            is_home=False
-        )
-    except Exception as e:
-        return f"❌ Folder error: {str(e)}", 500
-
-# === API UNTUK COMPLYLE ===
+# === API untuk integrasi (misal: Compyle) ===
 @app.route('/api/search', methods=['POST'])
-def compyle_search():
-    try:
-        data = request.get_json() or {}
-        query = data.get('query', '').strip()
-        if not query:
-            return jsonify({"results": []})
+def api_search():
+    data = request.get_json() or {}
+    query = data.get('query', '').strip()
+    if not query:
+        return jsonify({"results": []})
+    
+    conn = get_db_connection()
+    results = conn.execute(
+        "SELECT name, id FROM files WHERE is_directory = 0 AND name LIKE ? LIMIT 10",
+        (f"%{query}%",)
+    ).fetchall()
+    conn.close()
+    
+    return jsonify([
+        {
+            "name": r['name'],
+            "url": f"https://drive.google.com/file/d/{r['id']}/view"
+        }
+        for r in results
+    ])
 
-        matches = File.query.filter(File.is_folder == False, File.name.contains(query)).limit(10).all()
-        results = [{
-            "name": f.name,
-            "url": f.web_view_link,
-            "path": f.path,
-            "size": sizeof_fmt(f.size)
-        } for f in matches if f.web_view_link]
 
-        return jsonify({"results": results})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-import os
-import sys
-import subprocess
-
-def open_browser_after_start():
-    """Jalankan VBS untuk buka browser (hanya saat EXE dijalankan)"""
-    if getattr(sys, 'frozen', False):  # Jika dijalankan sebagai .exe
-        vbs_path = os.path.join(os.path.dirname(sys.executable), "launch_browser.vbs")
-        if os.path.exists(vbs_path):
-            subprocess.Popen([vbs_path], shell=True)
-
-# ... (route dan kode lainnya)
-
+# === JALANKAN APLIKASI ===
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    with app.app_context():
-        if not os.path.exists(DATABASE_PATH):
-            db.create_all()
-    # Jalankan Flask di thread terpisah agar bisa buka browser
-    from threading import Thread
-    server_thread = Thread(target=app.run, kwargs={"host": "0.0.0.0", "port": port, "debug": False, "use_reloader": False})
-    server_thread.daemon = True
-    server_thread.start()
-    
-    # Buka browser
-    open_browser_after_start()
-    
-    # Tahan program agar tidak exit
-    try:
-        server_thread.join()
-    except KeyboardInterrupt:
-        pass
-
-# === JALANKAN ===
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    with app.app_context():
-        if not os.path.exists(DATABASE_PATH):
-            db.create_all()
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=port, debug=True)

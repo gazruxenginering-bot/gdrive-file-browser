@@ -1,0 +1,155 @@
+<!-- templates/pdfjs_viewer.html -->
+{% extends "base.html" %}
+
+{% block title %}{{ file['name'] }} — Viewer{% endblock %}
+
+{% block content %}
+<a href="javascript:history.back()" class="back">← Kembali</a>
+<h2>{{ file['name'] }}</h2>
+
+<div class="pdfjs-controls" style="margin-bottom:10px; display:flex; gap:8px; align-items:center;">
+    <button id="prev">◀ Prev</button>
+    <button id="next">Next ▶</button>
+    <label style="margin-left:6px">Page <span id="page_num">1</span> / <span id="page_count">?</span></label>
+    <label style="margin-left:12px">Zoom</label>
+    <select id="zoom_select">
+        <option value="0.5">50%</option>
+        <option value="0.75">75%</option>
+        <option value="1" selected>100%</option>
+        <option value="1.25">125%</option>
+        <option value="1.5">150%</option>
+        <option value="2">200%</option>
+    </select>
+    <a id="open_in_new" target="_blank" rel="noopener" style="margin-left:12px;">Open in Drive</a>
+</div>
+
+<div id="pdf-viewer" style="flex:1; display:flex; align-items:center; justify-content:center; overflow:auto; padding:12px;">
+    <!-- Canvas for single-page rendering -->
+    <canvas id="pdf-canvas" style="max-width:100%; height:auto; border:1px solid #ddd; border-radius:6px; display:block;"></canvas>
+    <!-- Fallback iframe (hidden by default) -->
+    <iframe id="drive-iframe" style="display:none; width:100%; height:80vh; border:1px solid #ddd; border-radius:6px;" src="" frameborder="0" allowfullscreen></iframe>
+</div>
+
+<div style="margin-top:10px; color:#666; font-size:0.95em;">Jika PDF tidak muncul, gunakan tombol "Open in Drive" untuk melihatnya di Google Drive preview.</div>
+
+<!-- PDF.js from CDN -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.10.251/pdf.min.js"></script>
+<script>
+// Basic PDF.js single-page viewer
+// Use server-side proxy to avoid CORS issues
+const url = `/download/{{ file['id'] }}`;
+document.getElementById('open_in_new').href = `https://drive.google.com/file/d/{{ file['id'] }}/preview`;
+
+// Support multiple global names depending on how PDF.js was loaded from CDN
+const pdfjsLib = window['pdfjsLib'] || window['pdfjs-dist/build/pdf'];
+if (!pdfjsLib) {
+    console.error('PDF.js library not found');
+    showDriveFallback();
+} else {
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.10.251/pdf.worker.min.js';
+
+    let pdfDoc = null, pageNum = 1, userScale = 1.0, canvas = document.getElementById('pdf-canvas'), ctx = canvas.getContext('2d');
+
+function renderPage(num) {
+    pdfDoc.getPage(num).then(function(page) {
+        // base viewport at scale=1
+        const baseViewport = page.getViewport({ scale: 1 });
+        const container = document.getElementById('pdf-viewer');
+        const containerWidth = container.clientWidth || (window.innerWidth - 320); // fallback
+
+        // compute scale so that page fits container width, then apply userScale multiplier
+        const fitScale = containerWidth / baseViewport.width;
+        const scale = fitScale * userScale;
+
+        const viewport = page.getViewport({ scale: scale });
+
+        // set canvas size in device pixels
+        const outputScale = window.devicePixelRatio || 1;
+        canvas.width = Math.floor(viewport.width * outputScale);
+        canvas.height = Math.floor(viewport.height * outputScale);
+        // set CSS size to match layout (responsive)
+        canvas.style.width = Math.floor(viewport.width) + 'px';
+        canvas.style.height = Math.floor(viewport.height) + 'px';
+
+        const transform = outputScale !== 1
+            ? [outputScale, 0, 0, outputScale, 0, 0]
+            : null;
+
+        const renderContext = {
+            canvasContext: ctx,
+            transform: transform,
+            viewport: viewport
+        };
+        page.render(renderContext).promise.then(function () {
+            document.getElementById('page_num').textContent = pageNum;
+        }).catch(function(err){
+            console.error('Render error', err);
+        });
+    }).catch(function(err){
+        console.error('Get page error', err);
+    });
+}
+
+// Re-render current page on resize with debounce
+let resizeTimer = null;
+window.addEventListener('resize', function(){
+    if (resizeTimer) clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(function(){ if (pdfDoc) renderPage(pageNum); }, 200);
+});
+
+    pdfjsLib.getDocument(url).promise.then(function(pdfDoc_) {
+        pdfDoc = pdfDoc_;
+        document.getElementById('page_count').textContent = pdfDoc.numPages;
+        renderPage(pageNum);
+    }).catch(function(err){
+        console.error('PDF load error:', err);
+        showDriveFallback(err);
+    });
+}
+
+function showDriveFallback(err){
+    console.warn('Falling back to Drive iframe viewer', err);
+    const canvas = document.getElementById('pdf-canvas');
+    const iframe = document.getElementById('drive-iframe');
+    // hide canvas and show iframe with Drive preview
+    if (canvas) canvas.style.display = 'none';
+    iframe.src = `https://drive.google.com/file/d/{{ file['id'] }}/preview`;
+    iframe.style.display = 'block';
+}
+
+document.getElementById('prev').addEventListener('click', function(){
+    if (pageNum <= 1) return; pageNum--; renderPage(pageNum);
+});
+document.getElementById('next').addEventListener('click', function(){
+    if (pageNum >= pdfDoc.numPages) return; pageNum++; renderPage(pageNum);
+});
+document.getElementById('zoom_select').addEventListener('change', function(e){
+    userScale = parseFloat(e.target.value);
+    if (typeof pdfDoc !== 'undefined' && pdfDoc) renderPage(pageNum);
+});
+</script>
+
+{% endblock %}
+
+{% block sidebar %}
+    <nav>
+        <h3 style="margin-top:14px; margin-bottom:6px; font-size:0.95em; color:#34495e;">Kategori</h3>
+        <ul>
+        {% for name, folder_id, count in root_list %}
+            <li style="margin-bottom:6px;">
+                <a href="/folder/{{ folder_id }}">{{ name }}</a>
+                <small style="color:#95a5a6"> ({{ count }})</small>
+            </li>
+        {% endfor %}
+        </ul>
+
+        {% if sidebar_items %}
+            <h4 style="margin-top:12px;">Subfolder</h4>
+            <ul>
+            {% for it in sidebar_items %}
+                <li style="margin-bottom:6px;"><a href="/folder/{{ it['id'] }}">{{ it['name'] }}</a></li>
+            {% endfor %}
+            </ul>
+        {% endif %}
+    </nav>
+{% endblock %}

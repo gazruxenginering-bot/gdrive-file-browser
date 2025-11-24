@@ -1,0 +1,31 @@
+<!-- templates/index.html -->
+{% extends "base.html" %}
+
+{% block title %}Beranda - Manual Otomotif{% endblock %}
+
+{% block content %}
+<h2>Kategori yang Tersedia</h2>
+<ul>
+{% for name, folder_id, count in root_list %}
+    <li class="folder">
+        📁 <a href="/folder/{{ folder_id }}">{{ name }}</a>
+        <span style="color: #95a5a6; font-size: 0.9em;">({{ count }} item)</span>
+    </li>
+{% endfor %}
+</ul>
+{% if search_results is defined and search_results %}
+    <h2>Hasil Pencarian untuk: "{{ query }}"</h2>
+    <ul>
+    {% for item in search_results %}
+        <li class="{% if item.is_directory %}folder{% else %}file{% endif %}">
+            {% if item.is_directory %}
+                📁 <a href="/folder/{{ item.id }}">{{ item.name }}</a>
+            {% else %}
+                📄 <a href="/file/{{ item.id }}" target="_blank">{{ item.name }}</a>
+                <small>({{ item.size | filesizeformat }})</small>
+            {% endif %}
+        </li>
+    {% endfor %}
+    </ul>
+{% endif %}
+{% endblock %}

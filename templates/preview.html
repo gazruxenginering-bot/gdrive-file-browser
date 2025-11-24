@@ -1,0 +1,37 @@
+<!-- templates/preview.html -->
+{% extends "base.html" %}
+
+{% block title %}{{ file['name'] }}{% endblock %}
+
+{% block content %}
+<a href="javascript:history.back()" class="back">← Kembali</a>
+<h2>{{ file['name'] }}</h2>
+
+<div class="pdf-container">
+    <iframe class="pdf-preview" src="https://drive.google.com/file/d/{{ file['id'] }}/preview" frameborder="0" allow="autoplay; encrypted-media" allowfullscreen></iframe>
+</div>
+
+{% endblock %}
+
+{% block sidebar %}
+    <nav>
+        <h3 style="margin-top:14px; margin-bottom:6px; font-size:0.95em; color:#34495e;">Kategori</h3>
+        <ul>
+        {% for name, folder_id, count in root_list %}
+            <li style="margin-bottom:6px;">
+                <a href="/folder/{{ folder_id }}">{{ name }}</a>
+                <small style="color:#95a5a6"> ({{ count }})</small>
+            </li>
+        {% endfor %}
+        </ul>
+
+        {% if sidebar_items %}
+            <h4 style="margin-top:12px;">Subfolder</h4>
+            <ul>
+            {% for it in sidebar_items %}
+                <li style="margin-bottom:6px;"><a href="/folder/{{ it['id'] }}">{{ it['name'] }}</a></li>
+            {% endfor %}
+            </ul>
+        {% endif %}
+    </nav>
+{% endblock %}

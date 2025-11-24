@@ -1,0 +1,26 @@
+<!-- search.html -->
+{% extends "base.html" %}
+
+{% block title %}Cari: {{ query }}{% endblock %}
+
+{% block content %}
+<a href="/" class="back">← Kembali ke Beranda</a>
+<h2>Hasil Pencarian untuk: <em>{{ query }}</em></h2>
+
+{% if results %}
+    <ul>
+    {% for item in results %}
+        <li class="{% if item['is_directory'] %}folder{% else %}file{% endif %}">
+            {% if item['is_directory'] %}
+                📁 <a href="/folder/{{ item['id'] }}">{{ item['name'] }}</a>
+            {% else %}
+                📄 <a href="/file/{{ item['id'] }}" target="_blank">{{ item['name'] }}</a>
+                <small>({{ item['size'] | filesizeformat }})</small>
+            {% endif %}
+        </li>
+    {% endfor %}
+    </ul>
+{% else %}
+    <p>Tidak ada hasil ditemukan untuk "<strong>{{ query }}</strong>". Coba kata kunci lain.</p>
+{% endif %}
+{% endblock %}

@@ -1,87 +1,109 @@
-import os
-import pickle
-from google.auth.transport.requests import Request
-from google_auth_oauthlib.flow import InstalledAppFlow
-from googleapiclient.discovery import build
-from config import SCOPES, CREDENTIALS_FILE, TOKEN_FILE, ROOT_FOLDERS
+# drive_sync.py
 
+import sqlite3
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+
+# === Konfigurasi ===
+SERVICE_ACCOUNT_FILE = 'credentials.json'
+SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
+DATABASE_PATH = 'database.db'
+
+ROOT_FOLDERS = {
+    "EBOOKS": "12ffd7GqHAiy3J62Vu65LbVt6-ultog5Z",
+    "Pengetahuan": "1Y2SLCbyHoB53BaQTTwRta2T6dv_drRll",
+    "Service_Manual_1": "1CHz8UWZXfJtXlcjp9-FPAo-t_KkfTztW",
+    "Service_Manual_2": "1_SsZ7SkaZxvXUZ6RUAA_o7WR_GAtgEwT"
+}
+
+# === Setup Google Drive API ===
 def get_drive_service():
-    creds = None
-    if os.path.exists(TOKEN_FILE):
-        with open(TOKEN_FILE, 'rb') as token:
-            creds = pickle.load(token)
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, SCOPES)
-            creds = flow.run_local_server(port=0)
-        with open(TOKEN_FILE, 'wb') as token:
-            pickle.dump(creds, token)
+    creds = service_account.Credentials.from_service_account_file(
+        SERVICE_ACCOUNT_FILE, scopes=SCOPES
+    )
     return build('drive', 'v3', credentials=creds)
 
-def sync_folder_tree(service, folder_id, root_key, current_path="/", visited=None):
-    if visited is None:
-        visited = set()
-    if folder_id in visited:
-        return []
-    visited.add(folder_id)
+# === Setup Database ===
+def init_db():
+    conn = sqlite3.connect(DATABASE_PATH)
+    cursor = conn.cursor()
+    cursor.execute('''CREATE TABLE IF NOT EXISTS files (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        mime_type TEXT,
+        size INTEGER DEFAULT 0,
+        modified_time TEXT,
+        parent_id TEXT,
+        root_folder_name TEXT,
+        is_directory BOOLEAN DEFAULT 0
+    )''')
+    conn.commit()
+    conn.close()
 
-    results = service.files().list(
-        q=f"'{folder_id}' in parents and trashed=false",
-        fields="files(id, name, mimeType, size, webViewLink, parents, modifiedTime)",
-        supportsAllDrives=True,
-        includeItemsFromAllDrives=True,
-        pageSize=1000  # ← ambil hingga 1000 file per folder
-    ).execute()
-    items = results.get('files', [])
-    result = []
+# === Sinkronisasi Rekursif (Gunakan koneksi yang sama) ===
+def sync_folder_recursive(service, conn, folder_id, root_name, parent_id=None, level=0):
+    cursor = conn.cursor()
+    page_token = None
 
-    for item in items:
-        item_path = os.path.join(current_path, item['name']).replace('\\', '/')
-        is_folder = item['mimeType'] == 'application/vnd.google-apps.folder'
-        modified_time = item.get('modifiedTime')
-        if modified_time:
-            from datetime import datetime
-            modified_time = datetime.fromisoformat(modified_time.replace('Z', '+00:00'))
+    while True:
+        results = service.files().list(
+            q=f"'{folder_id}' in parents and trashed=false",
+            fields="nextPageToken, files(id, name, mimeType, size, modifiedTime)",
+            pageSize=1000,
+            pageToken=page_token
+        ).execute()
 
-        data = {
-            'drive_id': item['id'],
-            'name': item['name'],
-            'mime_type': item['mimeType'],
-            'is_folder': is_folder,
-            'parent_id': folder_id,
-            'root_key': root_key,
-            'path': item_path,
-            'size': int(item.get('size', 0)) if not is_folder else 0,
-            'web_view_link': item.get('webViewLink', ''),
-            'modified_time': modified_time
-        }
-        result.append(data)
+        items = results.get('files', [])
+        if not items:
+            break
 
-        if is_folder:
-            result.extend(sync_folder_tree(service, item['id'], root_key, item_path, visited))
+        for item in items:
+            is_dir = item.get('mimeType') == 'application/vnd.google-apps.folder'
+            size = int(item.get('size', 0)) if not is_dir else 0
 
-    return result
+            cursor.execute('''INSERT OR REPLACE INTO files
+                (id, name, mime_type, size, modified_time, parent_id, root_folder_name, is_directory)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+                (
+                    item['id'],
+                    item['name'],
+                    item.get('mimeType', 'unknown'),
+                    size,
+                    item.get('modifiedTime', ''),
+                    folder_id,
+                    root_name,
+                    is_dir
+                )
+            )
+            print("  " * level + f"{'📁' if is_dir else '📄'} {item['name']}")
 
-def sync_all_roots(service):
-    all_items = []
-    for key, folder_id in ROOT_FOLDERS.items():
-        print(f"Syncing root: {key} ({folder_id})")
-        # Buat entri virtual root agar muncul di halaman utama
-        virtual_root = {
-            'drive_id': folder_id,
-            'name': key.replace('_', ' ').title(),
-            'mime_type': 'application/vnd.google-apps.folder',
-            'is_folder': True,
-            'parent_id': None,
-            'root_key': key,
-            'path': f"/{key}",
-            'size': 0,
-            'web_view_link': '',
-            'modified_time': None
-        }
-        all_items.append(virtual_root)
-        # Sinkronkan isi folder
-        all_items.extend(sync_folder_tree(service, folder_id, key, f"/{key}"))
-    return all_items
+            # Rekursif jika folder — tetap gunakan koneksi yang sama!
+            if is_dir:
+                sync_folder_recursive(service, conn, item['id'], root_name, item['id'], level + 1)
+
+        page_token = results.get('nextPageToken')
+        if not page_token:
+            break
+
+    conn.commit()  # Commit setelah setiap folder selesai
+
+# === Sinkronisasi Semua Root Folder ===
+def sync_all_folders():
+    print("🔧 Memulai sinkronisasi Google Drive...")
+    init_db()
+    service = get_drive_service()
+
+    # Gunakan SATU koneksi database untuk seluruh proses
+    conn = sqlite3.connect(DATABASE_PATH, timeout=20.0)
+
+    try:
+        for root_name, folder_id in ROOT_FOLDERS.items():
+            print(f"\n🚀 Sinkronisasi root folder: {root_name} (ID: {folder_id})")
+            sync_folder_recursive(service, conn, folder_id, root_name, folder_id)
+        print("\n✅ Sinkronisasi selesai! Data tersimpan di database.db")
+    finally:
+        conn.close()
+
+# === Jalankan Saat File Di-Run Langsung ===
+if __name__ == '__main__':
+    sync_all_folders()

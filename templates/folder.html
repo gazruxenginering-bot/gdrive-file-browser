@@ -1,0 +1,65 @@
+<!-- templates/folder.html -->
+{% extends "base.html" %}
+
+{% block title %}{{ folder_name }} - Manual Otomotif{% endblock %}
+
+{% block content %}
+<a href="/" class="back">← Kembali ke Beranda</a>
+<h2>📁 {{ folder_name }}</h2>
+
+{% if items %}
+    {% set file_count = namespace(value=0) %}
+    {% set folder_count = namespace(value=0) %}
+    {% for item in items %}
+        {% if item.is_directory %}
+            {% set folder_count.value = folder_count.value + 1 %}
+        {% else %}
+            {% set file_count.value = file_count.value + 1 %}
+        {% endif %}
+    {% endfor %}
+
+    <p>
+        <strong>{{ folder_count.value }} folder</strong> dan <strong>{{ file_count.value }} file</strong> ditemukan.
+    </p>
+
+    <ul>
+    {% for item in items %}
+        {% if item.is_directory %}
+            <li class="folder">
+                📁 <a href="/folder/{{ item.id }}">{{ item.name }}</a>
+            </li>
+        {% else %}
+            <li class="file">
+                📄 <a href="/file/{{ item.id }}" target="_blank">{{ item.name }}</a>
+                <small>({{ item.size | filesizeformat }})</small>
+            </li>
+        {% endif %}
+    {% endfor %}
+    </ul>
+{% else %}
+    <p>📁 Folder ini kosong atau tidak berisi file yang dapat diakses.</p>
+{% endif %}
+{% endblock %}
+
+{% block sidebar %}
+    <nav>
+        <h3 style="margin-top:14px; margin-bottom:6px; font-size:0.95em; color:#34495e;">Kategori</h3>
+        <ul>
+        {% for name, folder_id, count in root_list %}
+            <li style="margin-bottom:6px;">
+                <a href="/folder/{{ folder_id }}">{{ name }}</a>
+                <small style="color:#95a5a6"> ({{ count }})</small>
+            </li>
+        {% endfor %}
+        </ul>
+
+        {% if items %}
+            <h4 style="margin-top:12px;">Subfolder</h4>
+            <ul>
+            {% for item in items if item.is_directory %}
+                <li style="margin-bottom:6px;"><a href="/folder/{{ item.id }}">{{ item.name }}</a></li>
+            {% endfor %}
+            </ul>
+        {% endif %}
+    </nav>
+{% endblock %}
