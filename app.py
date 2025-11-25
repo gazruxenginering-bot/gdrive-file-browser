@@ -25,7 +25,10 @@ if sa_json:
         print('Warning: could not write credentials.json from SERVICE_ACCOUNT_JSON')
 
 app = Flask(__name__)
-DATABASE = 'database.db'
+from config import DATABASE_PATH
+
+# Use the detected database path from config (DATABASE_URL-aware fallback)
+DATABASE = DATABASE_PATH
 
 # === Konfigurasi Root Folder (harus sesuai dengan drive_sync.py) ===
 ROOT_FOLDERS = {
