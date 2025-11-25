@@ -1,0 +1,30 @@
+# Render service definition for gdrive-file-browser
+# See https://render.com/docs/deploy-yaml for schema details
+# Deploy to Render.com free tier:
+# 1. Go to render.com and login with GitHub
+# 2. Create New → Web Service → select gdrive-file-browser repo
+# 3. Render will auto-detect this render.yaml file
+# 4. In Render dashboard, add a Secret: SERVICE_ACCOUNT_JSON = (full JSON content)
+# 5. Deploy and watch logs in Render dashboard
+
+services:
+  - type: web
+    name: gdrive-file-browser
+    env: python
+    plan: free
+    region: oregon
+    branch: main
+    autoDeploy: true
+    buildCommand: pip install -r requirements.txt
+    # Use 1-2 workers on free tier to stay within memory limits (512 MB)
+    startCommand: gunicorn app:app -w 2 -b 0.0.0.0:$PORT --timeout 60
+    healthCheckPath: /healthz
+    envVars:
+      - key: FLASK_DEBUG
+        value: "false"
+    # Secrets: Add in Render dashboard (Settings → Environment)
+    # Do NOT store secrets in this file or in git!
+    # Add Secret: SERVICE_ACCOUNT_JSON = contents of your service account JSON file
+    # Optional: Add DATABASE_URL if you provision Render PostgreSQL
+    secrets:
+      - SERVICE_ACCOUNT_JSON
