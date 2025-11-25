@@ -7,6 +7,23 @@ from flask import Flask, render_template, abort, request, jsonify, Response, str
 from google.oauth2 import service_account
 from google.auth.transport.requests import Request as AuthRequest
 
+# If deploying to platforms like Render where you cannot store a file directly,
+# we support providing the service account JSON via the environment variable
+# `SERVICE_ACCOUNT_JSON`. If set, write it to `credentials.json` at startup.
+sa_json = os.environ.get('SERVICE_ACCOUNT_JSON')
+if sa_json:
+    creds_path = os.path.join(os.path.dirname(__file__), 'credentials.json')
+    try:
+        with open(creds_path, 'w') as f:
+            f.write(sa_json)
+        try:
+            os.chmod(creds_path, 0o600)
+        except Exception:
+            pass
+    except Exception:
+        # If we cannot write the file, log and continue; proxy endpoint will fail later if needed
+        print('Warning: could not write credentials.json from SERVICE_ACCOUNT_JSON')
+
 app = Flask(__name__)
 DATABASE = 'database.db'
 
@@ -238,5 +255,15 @@ def api_search():
 
 # === JALANKAN APLIKASI ===
 if __name__ == '__main__':
+    # In production the app should be run with a WSGI server (gunicorn).
+    # Only use Flask's dev server when running locally. The debug mode
+    # can be enabled by setting FLASK_DEBUG=true in the environment.
     port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=True)
+    debug_mode = os.environ.get('FLASK_DEBUG', 'false').lower() == 'true'
+    app.run(host='0.0.0.0', port=port, debug=debug_mode)
+
+
+# Lightweight healthcheck for deployment platforms
+@app.route('/healthz')
+def healthz():
+    return "ok", 200
